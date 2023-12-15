@@ -39,7 +39,7 @@ def opening(file: Path, output: Path = None, n_docs: int = 1_000_000):
         - lang: Language code used to chose the tokenizer
     """
     assert file.exists()
-    return jsonql.run_pipes(
+    jsonql.run_pipes(
         functools.partial(extract_opening_text, n_docs=n_docs),
         file=file,
         output=tmp(output) if output else None,

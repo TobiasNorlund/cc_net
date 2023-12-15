@@ -111,20 +111,22 @@ data/lm_sp/%.sp.model: data/cirrus/txt/%.opening.txt
 	echo "Trained SentencePiece model with `wc -l $(basename $@).vocab` pieces"
 
 data/cirrus/sp/%.opening.txt: data/cirrus/gz/%.json.gz data/lm_sp/%.sp.model
+	mkdir -p data/cirrus/sp
 	$(SPM_ENCODE) \
 		--model=$(word 2,$^) \
 		--output_format=piece \
-			< <(python get_wiki_cirrus.py opening --file $< --n_docs $(NDOC_FOR_LM)) \
+			< <(python cc_net/get_wiki_cirrus.py opening --file $< --n_docs $(NDOC_FOR_LM)) \
 			> $@
 
 data/cirrus/txt/%.opening.txt: data/cirrus/gz/%.json.gz
-	python get_wiki_cirrus.py opening \
+	mkdir -p data/cirrus/txt
+	python cc_net/get_wiki_cirrus.py opening \
 		--n_docs $(NDOC_FOR_LM) \
 		--file $< --output $@
 
 data/cirrus/gz/%.json.gz:
-	mkdir $(@D)
-	python get_wiki_cirrus.py dl --lang $(call get_lang,$(@F)) --output_dir $(@D)
+	mkdir -p $(@D)
+	python cc_net/get_wiki_cirrus.py dl --lang $(call get_lang,$(@F)) --output_dir $(@D)
 
 clean:
 	# Remove intemediary files, dataset, third_party sources
