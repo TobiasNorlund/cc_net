@@ -20,7 +20,7 @@ from bs4 import BeautifulSoup  # type: ignore
 
 from cc_net import jsonql
 
-WET_URL_ROOT = "https://commoncrawl.s3.amazonaws.com"
+WET_URL_ROOT = "https://data.commoncrawl.org"
 
 
 logger = logging.getLogger(__name__)
@@ -70,13 +70,22 @@ def parse_doc(headers: List[str], doc: List[str]) -> Optional[dict]:
         return None
 
     try:
-        warc_type = headers[1].split()[1]
+        headers_dict = {}
+        for header in headers:
+            try:
+                k, v = header.split(": ")
+                headers_dict[k] = v
+            except:
+                pass
+
+        warc_type = headers_dict["WARC-Type"]
         if warc_type != "conversion":
             return None
-        url = headers[2].split()[1]
-        date = headers[3].split()[1]
-        digest = headers[6].split()[1]
-        length = int(headers[8].split()[1])
+        url = headers_dict["WARC-Target-URI"]
+        date = headers_dict["WARC-Date"]
+        digest = headers_dict["WARC-Block-Digest"]
+        length = int(headers_dict["Content-Length"])
+
     except Exception as e:
         logger.warning("Can't parse header:", e, headers, doc)
         return None

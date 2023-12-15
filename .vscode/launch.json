@@ -1,0 +1,31 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "mine",
+            "type": "python",
+            "request": "launch",
+            "module": "cc_net",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--dump", "2023-40",
+                "--task_parallelism", "1",
+                "--num_shards", "2",
+                "--mine_num_processes", "2",
+                "--hash_in_mem", "1"
+            ]
+        },
+    ]
+}
