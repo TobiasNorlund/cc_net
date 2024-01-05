@@ -13,6 +13,15 @@
             "justMyCode": true
         },
         {
+            "name": "Python: Attach",
+            "type": "python",
+            "request": "attach",
+            "connect": {
+              "host": "localhost",
+              "port": 5678
+            }
+        },
+        {
             "name": "mine",
             "type": "python",
             "request": "launch",

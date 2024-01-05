@@ -84,6 +84,7 @@ def parse_doc(headers: List[str], doc: List[str]) -> Optional[dict]:
         url = headers_dict["WARC-Target-URI"]
         date = headers_dict["WARC-Date"]
         digest = headers_dict["WARC-Block-Digest"]
+        # langs = headers_dict.get("WARC-Identified-Content-Language", "").split(",")
         length = int(headers_dict["Content-Length"])
 
     except Exception as e:
@@ -105,6 +106,7 @@ def parse_doc(headers: List[str], doc: List[str]) -> Optional[dict]:
         "source_domain": urlparse(url).netloc,
         "title": title,
         "raw_content": "\n".join(doc),
+        #"languages": langs
     }
 
 
