@@ -53,6 +53,7 @@ class Config(NamedTuple):
     dump: CC dump id
     output_dir: working directory
     mined_dir: name of the destination folder, full path will be {ouput_dir}/{mined_dir}/{dump_id}
+    tmp_dir: name of a temporary dir under output_dir in which language filtered data will be stored
     execution: chose how to parallelize the execution
     num_shards: number of shards to split the dump
     num_segments_per_shard: allow to download a small portion of CC (eg for tests)
@@ -77,6 +78,7 @@ class Config(NamedTuple):
     dump: str = "2017-51"
     output_dir: Path = Path("data")
     mined_dir: str = "mined"
+    tmp_dir: str = "tmp"
     execution: str = "auto"
     num_shards: int = 1600
     num_segments_per_shard: int = -1
@@ -163,6 +165,14 @@ class Config(NamedTuple):
 
 BASE_CONFIG = Config()
 
+NORDIC_PILE_V2_CONFIG = Config(
+    dump="2023-50",
+    num_shards=2000,
+    lang_whitelist=["sv", "no", "da", "is"],
+    lang_threshold=0.2,
+    pipeline=["dedup"]
+)
+
 BYLANG_CONFIG = Config(
     config_name="by_lang",
     mined_dir="mined_by_lang",
@@ -207,6 +217,7 @@ TEST_CONFIG = BASE_CONFIG._replace(
 
 PREDEF_CONFIGS = {
     "base": BASE_CONFIG,
+    "nordic_pile_v2": NORDIC_PILE_V2_CONFIG,
     "by_lang": BYLANG_CONFIG,
     "test": TEST_CONFIG,
     "test_slurm": TEST_CONFIG._replace(execution="slurm,partition=dev"),
@@ -270,9 +281,23 @@ def hashes(conf: Config) -> List[Path]:
 
 def _hashes_shard(conf: Config, shard: int, output: Path):
     tmp_output = tmp(output)
+    lang_id = Path("bin") / "lid.bin"
+    (conf.output_dir / conf.tmp_dir).mkdir(exist_ok=True)
     jsonql.run_pipes(
+        split_by_lang.Classifier(
+            model=lang_id,
+            field="raw_content",
+            out_field="language",
+            top=1,
+            threshold=conf.lang_threshold,
+        ),
+        jsonql.where(
+            [lambda doc: doc.get("language") in set(conf.lang_whitelist)]
+        ),
         dedup.HashesCollector(field="raw_content", output=tmp_output),
         inputs=conf.get_cc_shard(shard),
+        # Save filtered output so that we don't have to download and re-filter after hashing
+        output=conf.output_dir / conf.tmp_dir / f"{shard}.jsonl.gz"
     )
     finalize(tmp_output, output)
     return f"Hashed {output}"
@@ -357,7 +382,7 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
         hashes_in_mem = shard
         hashes = hashes[: HASHES_IN_MEM[hashes_in_mem]]
         shard = 0
-    cc_shard = conf.get_cc_shard(shard)
+    #cc_shard = conf.get_cc_shard(shard)
 
     steps: Dict[str, Optional[jsonql.Transformer]] = {}
     lang_id = Path("bin") / "lid.bin"
@@ -431,7 +456,8 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
 
     jsonql.run_pipes(
         *pipeline,
-        inputs=cc_shard,
+        #inputs=cc_shard,
+        file=conf.output_dir / conf.tmp_dir / f"{shard}.jsonl.gz",
         processes=conf.mine_num_processes,
         chunksize=100,
         # The splitter takes care of writing to files.

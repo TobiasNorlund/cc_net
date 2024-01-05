@@ -22,7 +22,7 @@ def get_args():
     parser.add_argument("--pattern", type=str)
     parser.add_argument("--field", type=str, default="raw_content")
     parser.add_argument("--threshold", type=float, default=0)
-    parser.add_argument("--model", type=str, required=True)
+    parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--out_field", type=str, default="language")
     parser.add_argument("--top", type=int, default=1)
     return vars(parser.parse_args())
@@ -148,4 +148,6 @@ if __name__ == "__main__":
         classify_and_split(**args)
     else:
         args.pop("pattern")
+        args["file"] = args["file"][0]  # hack
+        del args["processes"]
         jsonql.run_pipe(Classifier, args)

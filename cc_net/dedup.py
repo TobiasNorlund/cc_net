@@ -357,6 +357,7 @@ class HashesCollector(jsonql.Transformer):
             return
         self.hashes.add(doc_hashes)
         self.n_lines += doc_hashes.size
+        return doc
 
     def close(self):
         if self.output and self.hashes:
