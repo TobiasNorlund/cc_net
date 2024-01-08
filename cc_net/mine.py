@@ -163,6 +163,14 @@ class Config(NamedTuple):
 
 BASE_CONFIG = Config()
 
+NORDIC_PILE_V2_CONFIG = Config(
+    dump="2023-50",
+    num_shards=2000,
+    lang_whitelist=["sv", "no", "da", "is"],
+    lang_threshold=0.2,
+    pipeline=["dedup", "lid", "keep_lang"]
+)
+
 BYLANG_CONFIG = Config(
     config_name="by_lang",
     mined_dir="mined_by_lang",
@@ -207,6 +215,7 @@ TEST_CONFIG = BASE_CONFIG._replace(
 
 PREDEF_CONFIGS = {
     "base": BASE_CONFIG,
+    "nordic_pile_v2": NORDIC_PILE_V2_CONFIG,
     "by_lang": BYLANG_CONFIG,
     "test": TEST_CONFIG,
     "test_slurm": TEST_CONFIG._replace(execution="slurm,partition=dev"),

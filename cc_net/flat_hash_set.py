@@ -175,14 +175,7 @@ try:
             """Override gp.Dict.load, to correctly merge values instead of overwriting."""
             other = gp.Dict(HASH_TYPE, np.uint8, default_value=False)
             other.load(str(filename))
-            n = len(other)
-            keys = np.fromiter(
-                (k for (k, v) in other.items()), dtype=HASH_TYPE, count=n
-            )
-            values = np.fromiter(
-                (v for (k, v) in other.items()), dtype=np.uint8, count=n
-            )
-            self.merge(keys, values)
+            self.merge(other.keys(), other.values())
 
     FlatHashSet: Type[AbstractDedupHashSet] = _FlatHashSet
 except ImportError:
