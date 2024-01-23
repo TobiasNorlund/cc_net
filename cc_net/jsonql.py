@@ -1082,7 +1082,7 @@ class MultiFile(SimpleIO):
 _session = functools.lru_cache()(requests.Session)
 
 
-def request_get_content(url: str, n_retry: int = 3) -> bytes:
+def request_get_content(url: str, n_retry: int = 10) -> bytes:
     """Retrieve the binary content at url.
 
     Retry on connection errors.
@@ -1322,9 +1322,9 @@ def _tmp(output: Path) -> Path:
 
 @functools.lru_cache()
 def _tmp_dir() -> Path:
-    job_id = os.environ.get("SLURM_JOB_ID")
-    if job_id:
-        return Path("/scratch/slurm_tmpdir") / job_id
+    #job_id = os.environ.get("SLURM_JOB_ID")
+    #if job_id:
+    #    return Path("/scratch/slurm_tmpdir") / job_id
 
     checkpoint = Path("/checkpoint") / os.environ.get("USER", "")
     if checkpoint.exists():

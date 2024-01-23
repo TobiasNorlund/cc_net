@@ -20,6 +20,7 @@ from collections import defaultdict
 from itertools import repeat
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
+from multiprocessing import Pool, Process
 
 import func_argparse
 
@@ -28,6 +29,7 @@ from cc_net import dedup, execution, jsonql, minify, perplexity, process_wet_fil
 from cc_net import regroup as regroup_module
 from cc_net import split_by_lang
 from cc_net.execution import Executor
+from cc_net.flat_hash_set import AbstractDedupHashSet, FlatHashSet
 
 # Constant
 FILE_DIR = Path(__file__).parent
@@ -99,7 +101,7 @@ class Config(NamedTuple):
     cache_dir: Optional[Path] = None
 
     def get_executor(
-        self, name: str, timeout_hour: int = 1, mem_gb: int = 1, cpus: int = 1
+        self, name: str, timeout_hour: int = 1, mem_gb: int = 1, cpus: int = 1, **options
     ) -> Executor:
         name = "_".join((name, self.config_name, *self.experiments))
         return execution.get_executor(
@@ -110,6 +112,7 @@ class Config(NamedTuple):
             mem_gb=mem_gb,
             cpus=cpus,
             task_parallelism=self.task_parallelism,
+            options=options
         )
 
     def get_cc_shard(self, shard: int) -> process_wet_file.CCShardReader:
@@ -165,10 +168,11 @@ BASE_CONFIG = Config()
 
 NORDIC_PILE_V2_CONFIG = Config(
     dump="2023-50",
-    num_shards=2000,
+    num_shards=1000,
+    mine_num_processes=64,
     lang_whitelist=["sv", "no", "da", "is"],
     lang_threshold=0.2,
-    pipeline=["dedup", "lid", "keep_lang"]
+    pipeline=["dedup", "lid", "keep_lang", "sp", "lm", "pp_bucket", "drop", "split_by_lang",]
 )
 
 BYLANG_CONFIG = Config(
@@ -266,15 +270,34 @@ def hashes(conf: Config) -> List[Path]:
         return outputs
 
     hashes_dir.mkdir(parents=True, exist_ok=True)
-    # With FlatHashSet we need ~2Gb of RAM / shard, but we need to account for
-    # overhead due to how the dynamic allocation works.
-    ex = conf.get_executor(f"hashes_{conf.dump}", mem_gb=4, timeout_hour=6, cpus=2)
-    ex(_hashes_shard, repeat(conf), *_transpose(missing_outputs))
+
+    #ex = conf.get_executor(f"hashes_{conf.dump}", mem_gb=10, timeout_hour=2, cpus=2)
+    #ex(_hashes_shard, repeat(conf), *_transpose(missing_outputs))
+    ex = conf.get_executor(f"hashes_{conf.dump}", mem_gb=220)
+
+    # Group shards by hashes_group
+    #missing_shards = [[shard for shard, _ in missing_outputs if shard // conf.hash_in_mem == g] 
+    #                  for g in range(len(hashes_groups))]
+    #missing_output_paths = [[p for shard, p in missing_outputs if shard // conf.hash_in_mem == g]
+    #                        for g in range(len(hashes_groups))]
+
+    # Group shards in groups of 20
+    missing_outputs = list(jsonql.grouper(missing_outputs, 20))
+    missing_shards = [[shard for shard, _ in g] for g in missing_outputs]
+    missing_outputs = [[output for _, output in g] for g in missing_outputs]
+    ex(_hashes_shards, repeat(conf), missing_shards, missing_outputs)
 
     # Wait a bit so that files appears on the disk.
     time.sleep(20)
     assert all(o.exists() for o in outputs)
     return outputs
+
+
+def _hashes_shards(conf, shards: List[int], outputs: List[Path]):
+    # Process all 20 shards in parallel
+    with Pool(20) as p:
+        p.starmap(_hashes_shard, zip(repeat(conf), shards, outputs))
+    return f"Mined shards {', '.join(map(str, shards))}"
 
 
 def _hashes_shard(conf: Config, shard: int, output: Path):
@@ -307,7 +330,7 @@ def mine(conf: Config) -> List[Path]:
         outputs = [mined_dir / f"{shard:04d}" for shard in range(conf.num_shards)]
 
     # TODO: try to reduce this / make it a function of "hash_in_mem" / num_langs
-    mem_gb = 60 + 1 * conf.hash_in_mem
+    mem_gb = 120 #conf.hash_in_mem
     timeout_hour = 5
     if "hashes" in conf.experiments:
         # HACK: used for generating paper figures
@@ -335,7 +358,7 @@ def mine(conf: Config) -> List[Path]:
         f"mine_{conf.dump}",
         mem_gb=mem_gb,
         timeout_hour=timeout_hour,
-        cpus=conf.mine_num_processes + 1,
+        cpus=conf.mine_num_processes,
     )
 
     # Compute hashes firsts.
@@ -373,7 +396,7 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
     steps["lid_before_dedup"] = split_by_lang.Classifier(
         model=lang_id, field="raw_content", out_field="lid_before_dedup", top=5
     )
-    steps["dedup"] = dedup.DuplicatesRemover(field="raw_content", hashes_files=hashes)
+    steps["dedup"] = dedup.DuplicatesRemover(field="raw_content", hashes_files=hashes, load_parallelism=conf.mine_num_processes)
 
     steps["lid"] = split_by_lang.Classifier(
         model=lang_id,
@@ -448,6 +471,164 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
     )
     finalize(tmp_output, output)
     return f"Mined {output}"
+
+
+def mine_parallel(conf: Config) -> List[Path]:
+    mined_dir = conf.get_mined_dir()
+    if conf.will_split:
+        # Give a directories when splitting
+        outputs = [mined_dir / f"{shard:04d}" for shard in range(conf.num_shards)]
+    else:
+        # Files otherwise
+        outputs = [
+            mined_dir / f"{shard:04d}.json.gz" for shard in range(conf.num_shards)
+        ]
+
+    missing_outputs = [(shard, o) for shard, o in enumerate(outputs) if not o.exists()]
+    if not missing_outputs:
+        return outputs
+    
+    # Compute hashes firsts.
+    hashes_groups = list(jsonql.grouper(hashes(conf), conf.hash_in_mem))
+
+    mined_dir.mkdir(parents=True, exist_ok=True)
+
+    # Request full node
+    ex = conf.get_executor(
+        f"mine_{conf.dump}",
+        mem_gb=440,
+        timeout_hour=24,
+        cpus=120,
+    )
+    # Group shards by hashes_group
+    missing_shards = [[shard for shard, _ in missing_outputs if shard // conf.hash_in_mem == g] 
+                      for g in range(len(hashes_groups))]
+    missing_output_paths = [[p for shard, p in missing_outputs if shard // conf.hash_in_mem == g]
+                            for g in range(len(hashes_groups))]
+    
+    # Then group into parallel groups
+    hashes_groups = jsonql.grouper(hashes_groups, n=5)
+    missing_shards = jsonql.grouper(missing_shards, n=5)
+    missing_output_paths = jsonql.grouper(missing_output_paths, n=5)
+
+    ex(_mine_shards_parallel, repeat(conf), hashes_groups, missing_shards, missing_output_paths)
+
+    assert all(o.exists() for o in outputs)
+    return outputs
+
+
+def _mine_shards_parallel(conf: Config, hashes: List[List[Path]], shards: List[List[int]], outputs: List[List[Path]]):
+    # Start a subprocess for each group, to run _mine_shard_group
+    procs = []
+    for hash_group, shard_group, output_group in zip(hashes, shards, outputs):
+        p = Process(target=_mine_shard_group, args=(conf, hash_group, shard_group, output_group))
+        p.start()
+        procs.append(p)
+    for p in procs:
+        p.join()
+
+
+def _mine_shard_group(conf: Config, hashes: List[Path], shards: List[int], outputs: List[Path]):
+    # Create and load FlatHashSet
+    duplicates = FlatHashSet()
+    duplicates.load_many(hashes, parallelism=4)
+
+    # Process each shard in group sequentially (hard to parallelize as the FlatHashSet can't be memory shared easily)
+    for shard, output in zip(shards, outputs):
+        _mine_single_shard(conf, shard, output, duplicates)
+
+
+    return f"Mined shards {', '.join(map(str, shards))}"
+
+
+def _mine_single_shard(conf: Config, shard: int, output: Path, duplicates: AbstractDedupHashSet):
+    # Create pipeline
+    # Run jsonql.run_pipes(...)
+    assert conf.pipeline
+    tmp_output = tmp(output)
+    cc_shard = conf.get_cc_shard(shard)
+
+    steps: Dict[str, Optional[jsonql.Transformer]] = {}
+    lang_id = Path("bin") / "lid.bin"
+    steps["lid_before_dedup"] = split_by_lang.Classifier(
+        model=lang_id, field="raw_content", out_field="lid_before_dedup", top=5
+    )
+    steps["dedup"] = dedup.DuplicatesRemover(
+        field="raw_content", duplicates=duplicates
+    )
+
+    steps["lid"] = split_by_lang.Classifier(
+        model=lang_id,
+        field="raw_content",
+        out_field="language",
+        top=1,
+        threshold=conf.lang_threshold,
+    )
+    steps["lid_after_dedup"] = split_by_lang.Classifier(
+        model=lang_id, field="raw_content", out_field="lid_after_dedup", top=5
+    )
+
+    if conf.lang_blacklist:
+        steps["keep_lang"] = jsonql.where(
+            [lambda doc: doc.get("language") not in set(conf.lang_blacklist)]
+        )
+    elif conf.lang_whitelist:
+        steps["keep_lang"] = jsonql.where(
+            [lambda doc: doc.get("language") in set(conf.lang_whitelist)]
+        )
+    else:
+        steps["keep_lang"] = None
+
+    tok_field = "tokenized"
+    steps["sp"] = perplexity.MultiSentencePiece(
+        {l: conf.lm_dir / f"{l}.sp.model" for l in conf.get_lm_languages()},
+        field="raw_content",
+        output_field=tok_field,
+        normalize=True,
+    )
+    steps["lm"] = perplexity.DocLM(
+        {l: conf.lm_dir / f"{l}.arpa.bin" for l in conf.get_lm_languages()},
+        field=tok_field,
+        output_field="perplexity",
+        normalize=False,  # Normalization is done before SentencePiece
+        # load_method=kenlm.LoadMethod.PARALLEL_READ,
+    )
+    steps["pp_bucket"] = perplexity.PerplexityBucket(CUTOFF_CSV)
+    steps["drop"] = perplexity.DropKeys(tok_field)
+
+    steps["keep_bucket"] = None
+    if conf.keep_bucket:
+        steps["keep_bucket"] = jsonql.where(
+            [lambda doc: doc.get("bucket", "all") in conf.keep_bucket]
+        )
+
+    if "fetch_metadata" in conf.pipeline:
+        # TODO: better default
+        assert conf.metadata is not None
+        steps["fetch_metadata"] = minify.MetadataFetcher(
+            f"{conf.metadata}/{conf.dump}/"
+        )
+
+    steps["minify"] = minify.Minifier()
+
+    pattern = str(tmp_output / "{language}_{bucket}.json.gz")
+    steps["split_by_lang"] = jsonql.split(pattern=str(pattern), mkdir=True)
+
+    steps["split_by_segment"] = jsonql.split(
+        split_fn=lambda doc: _get_segment(tmp_output, doc), mkdir=True
+    )
+
+    pipeline = filter(None, (steps[s] for s in conf.pipeline))
+
+    jsonql.run_pipes(
+        *pipeline,
+        inputs=cc_shard,
+        processes=conf.mine_num_processes,
+        chunksize=100,
+        # The splitter takes care of writing to files.
+        output=tmp_output if not conf.will_split else None,
+    )
+    finalize(tmp_output, output)
 
 
 def regroup(conf: Config, all_dirs: List[Path]) -> Path:
@@ -637,7 +818,8 @@ def main(config: str = "base", **config_as_dict: Any) -> None:
 
     print(f"Will run cc_net.mine.main with the following config:", conf)
 
-    all_files = mine(conf)
+    #all_files = mine(conf)
+    all_files = mine_parallel(conf)
     if conf.will_split:
         assert all_files
         assert all(d.is_dir() for d in all_files)

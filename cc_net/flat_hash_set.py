@@ -7,13 +7,17 @@
 import sys
 import time
 import warnings
+import logging
 from typing import Iterable, Iterator, Sequence, Sized, Tuple, Type
+from datetime import datetime
 
 import numpy as np
 
 HASH_TYPE: Type[np.uint64] = np.uint64
 
 GETPY_WARNING = False
+
+logger = logging.getLogger(__name__)
 
 
 class AbstractDedupHashSet(Sized, Iterable[np.uint64]):
@@ -70,6 +74,10 @@ class AbstractDedupHashSet(Sized, Iterable[np.uint64]):
 
     def load(self, filename):
         return self.load_np(filename)
+    
+    def load_many(self, filenames, **kwargs):
+        for file in filenames:
+            self.load(str(file))
 
     def dump_np(self, filename):
         kv_type = np.dtype([("k", HASH_TYPE), ("v", np.uint8)])
@@ -142,6 +150,14 @@ class NaiveHashSet(dict, AbstractDedupHashSet):
 
 try:
     import getpy as gp  # type: ignore
+    from multiprocessing import Process, Queue
+
+    def _load_kv_worker(file_queue, output_queue):
+        while file := file_queue.get():
+            logger.info(f"Start loading {file}")
+            other = gp.Dict(HASH_TYPE, np.uint8, default_value=False)
+            other.load(str(file))
+            output_queue.put((file, other.keys(), other.values()))
 
     class _FlatHashSet(gp.Dict, AbstractDedupHashSet):
         """C++ backed implementation of AbstractDedupHashSet.
@@ -166,7 +182,31 @@ try:
             return self.dump_gp(filename)
 
         def load(self, filename):
+            if len(self) == 0:
+                return super().load(filename)
             return self.load_gp(filename)
+        
+        def load_many(self, filenames, parallelism=1):
+            input_queue = Queue()
+            for file in filenames:
+                input_queue.put(file)
+            output_queue = Queue(parallelism)
+            procs = [Process(target=_load_kv_worker, args=(input_queue, output_queue))
+                    for _ in range(parallelism)]
+            for p in procs:
+                input_queue.put(None)
+                p.start()
+            try:
+                n_finished = 0
+                while n_finished < len(filenames):
+                    file, keys, values = output_queue.get()
+                    logger.info(f"Started merging hashes from {file}")
+                    self.merge(keys, values)
+                    logger.info(f"Merged hashes from {file}")
+                    n_finished += 1
+            finally:
+                for p in procs:
+                    p.join()
 
         def dump_gp(self, filename):
             return gp.Dict.dump(self, str(filename))

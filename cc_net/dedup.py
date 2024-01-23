@@ -374,13 +374,18 @@ class DuplicatesRemover(jsonql.Transformer):
     # The hashes can't be pickled so they will have to be read back from disk.
     warn_when_pickling = True
 
-    def __init__(self, field: str, hashes_files: List[Path], collect: bool = False):
+    def __init__(self, 
+                 field: str, 
+                 hashes_files: Optional[List[Path]] = None, 
+                 collect: bool = False, 
+                 load_parallelism: int = 2):
         """
         Remove duplicates
         """
         super().__init__()
         self.field = field
         self.collect = collect
+        self.load_parallelism = load_parallelism
 
         self.hashes_files = hashes_files
         self.duplicates: Optional[AbstractDedupHashSet] = None
@@ -394,14 +399,7 @@ class DuplicatesRemover(jsonql.Transformer):
         self.duplicates = FlatHashSet()
 
         start = time.time()
-        for h in self.hashes_files:
-            shard_start = time.time()
-            self.duplicates.load(str(h))
-            delay = time.time() - shard_start
-            self.log(
-                f"Loaded hashes from {h} ({mem_footprint_gb():.3f}GB total, took {delay / 60:.1}m)"
-            )
-
+        self.duplicates.load_many(self.hashes_files, parallelism=self.load_parallelism)
         delay = time.time() - start
         self.log(
             f"Loaded {len(self.duplicates):_d} hashes from {len(self.hashes_files)} files. ({mem_footprint_gb():.1f}GB total, took {delay / 60:.1}m)"
