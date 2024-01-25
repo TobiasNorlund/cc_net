@@ -378,7 +378,8 @@ class DuplicatesRemover(jsonql.Transformer):
                  field: str, 
                  hashes_files: Optional[List[Path]] = None, 
                  collect: bool = False, 
-                 load_parallelism: int = 2):
+                 load_parallelism: int = 2,
+                 duplicates: Optional[AbstractDedupHashSet] = None):
         """
         Remove duplicates
         """
@@ -388,7 +389,7 @@ class DuplicatesRemover(jsonql.Transformer):
         self.load_parallelism = load_parallelism
 
         self.hashes_files = hashes_files
-        self.duplicates: Optional[AbstractDedupHashSet] = None
+        self.duplicates: Optional[AbstractDedupHashSet] = duplicates
 
         self.n_lines, self.n_lines_kept = 0, 0
         self.n_chars, self.n_chars_kept = 0, 0

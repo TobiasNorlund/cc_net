@@ -100,6 +100,16 @@ class Config(NamedTuple):
     experiments: Sequence[str] = []
     cache_dir: Optional[Path] = None
 
+    # hashes infra
+    hashes_task_mem: int = 220  # memory in GB for one hashes task
+    hashes_shards_per_task: int = 1  # The number of shards to hash (in parallel) in each task
+    
+    # mine infra
+    mine_task_mem: int = 440  # memory in GB for one mine task
+    mine_task_timeout: int = 24  # timeout in hours
+    mine_task_cpus: int = 120  # num cpu cores for one mine task
+    mine_task_groups: int = 5  # number of groups of hash_in_mem shards per task
+
     def get_executor(
         self, name: str, timeout_hour: int = 1, mem_gb: int = 1, cpus: int = 1, **options
     ) -> Executor:
@@ -169,10 +179,20 @@ BASE_CONFIG = Config()
 NORDIC_PILE_V2_CONFIG = Config(
     dump="2023-50",
     num_shards=1000,
-    mine_num_processes=64,
+    hash_in_mem=50,
     lang_whitelist=["sv", "no", "da", "is"],
     lang_threshold=0.2,
-    pipeline=["dedup", "lid", "keep_lang", "sp", "lm", "pp_bucket", "drop", "split_by_lang",]
+    pipeline=["dedup", "lid", "keep_lang", "sp", "lm", "pp_bucket", "drop", "split_by_lang"]
+)
+
+NORDIC_PILE_V2_DARDEL_CONFIG = NORDIC_PILE_V2_CONFIG._replace(
+    hashes_task_mem=220,
+    hashes_shards_per_task=20,
+    mine_task_mem = 440,
+    mine_task_timeout=24,
+    mine_task_cpus=120,
+    mine_task_groups=5,
+    mine_num_processes=32,
 )
 
 BYLANG_CONFIG = Config(
@@ -219,7 +239,7 @@ TEST_CONFIG = BASE_CONFIG._replace(
 
 PREDEF_CONFIGS = {
     "base": BASE_CONFIG,
-    "nordic_pile_v2": NORDIC_PILE_V2_CONFIG,
+    "nordic_pile_v2_dardel": NORDIC_PILE_V2_DARDEL_CONFIG,
     "by_lang": BYLANG_CONFIG,
     "test": TEST_CONFIG,
     "test_slurm": TEST_CONFIG._replace(execution="slurm,partition=dev"),
@@ -271,18 +291,10 @@ def hashes(conf: Config) -> List[Path]:
 
     hashes_dir.mkdir(parents=True, exist_ok=True)
 
-    #ex = conf.get_executor(f"hashes_{conf.dump}", mem_gb=10, timeout_hour=2, cpus=2)
-    #ex(_hashes_shard, repeat(conf), *_transpose(missing_outputs))
-    ex = conf.get_executor(f"hashes_{conf.dump}", mem_gb=220)
+    ex = conf.get_executor(f"hashes_{conf.dump}", mem_gb=conf.hashes_task_mem)
 
-    # Group shards by hashes_group
-    #missing_shards = [[shard for shard, _ in missing_outputs if shard // conf.hash_in_mem == g] 
-    #                  for g in range(len(hashes_groups))]
-    #missing_output_paths = [[p for shard, p in missing_outputs if shard // conf.hash_in_mem == g]
-    #                        for g in range(len(hashes_groups))]
-
-    # Group shards in groups of 20
-    missing_outputs = list(jsonql.grouper(missing_outputs, 20))
+    # Group shards in groups
+    missing_outputs = list(jsonql.grouper(missing_outputs, conf.hashes_shards_per_task))
     missing_shards = [[shard for shard, _ in g] for g in missing_outputs]
     missing_outputs = [[output for _, output in g] for g in missing_outputs]
     ex(_hashes_shards, repeat(conf), missing_shards, missing_outputs)
@@ -293,9 +305,9 @@ def hashes(conf: Config) -> List[Path]:
     return outputs
 
 
-def _hashes_shards(conf, shards: List[int], outputs: List[Path]):
+def _hashes_shards(conf: Config, shards: List[int], outputs: List[Path]):
     # Process all 20 shards in parallel
-    with Pool(20) as p:
+    with Pool(conf.hashes_shards_per_task) as p:
         p.starmap(_hashes_shard, zip(repeat(conf), shards, outputs))
     return f"Mined shards {', '.join(map(str, shards))}"
 
@@ -496,20 +508,26 @@ def mine_parallel(conf: Config) -> List[Path]:
     # Request full node
     ex = conf.get_executor(
         f"mine_{conf.dump}",
-        mem_gb=440,
-        timeout_hour=24,
-        cpus=120,
+        mem_gb=conf.mine_task_mem,
+        timeout_hour=conf.mine_task_timeout,
+        cpus=conf.mine_task_cpus,
     )
-    # Group shards by hashes_group
-    missing_shards = [[shard for shard, _ in missing_outputs if shard // conf.hash_in_mem == g] 
-                      for g in range(len(hashes_groups))]
-    missing_output_paths = [[p for shard, p in missing_outputs if shard // conf.hash_in_mem == g]
-                            for g in range(len(hashes_groups))]
+    # Group shards
+    missing_shards = []
+    missing_output_paths = []
+    relevant_hashes_groups = []
+    for group_idx in range(len(hashes_groups)):
+        group_shards = [shard for shard, _ in missing_outputs if shard // conf.hash_in_mem == group_idx]
+        group_output_paths = [p for shard, p in missing_outputs if shard // conf.hash_in_mem == group_idx]
+        if len(group_shards) > 0:
+            missing_shards.append(group_shards)
+            missing_output_paths.append(group_output_paths)
+            relevant_hashes_groups.append(hashes_groups[group_idx])
     
-    # Then group into parallel groups
-    hashes_groups = jsonql.grouper(hashes_groups, n=5)
-    missing_shards = jsonql.grouper(missing_shards, n=5)
-    missing_output_paths = jsonql.grouper(missing_output_paths, n=5)
+    # Then group again to form parallel groups
+    hashes_groups = list(jsonql.grouper(relevant_hashes_groups, n=conf.mine_task_groups))
+    missing_shards = list(jsonql.grouper(missing_shards, n=conf.mine_task_groups))
+    missing_output_paths = list(jsonql.grouper(missing_output_paths, n=conf.mine_task_groups))
 
     ex(_mine_shards_parallel, repeat(conf), hashes_groups, missing_shards, missing_output_paths)
 
