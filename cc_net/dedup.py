@@ -292,7 +292,7 @@ def compute_hashes(content) -> Optional[np.ndarray]:
     return np.ndarray(dtype=HASH_TYPE, buffer=hashes.data, shape=hashes.shape)
 
 
-def finalize_doc(doc, field, hashes=None):
+def finalize_doc(doc, field, hashes=None, org_field=None):
     content = doc.get(field)
     lines = content.split("\n")
     n_chars = len(content)
@@ -314,6 +314,9 @@ def finalize_doc(doc, field, hashes=None):
             new_lines.append(line)
         seen.add(h)
 
+    if org_field is not None:
+        # Save original doc
+        doc[org_field] = content
     doc[field] = "\n".join(new_lines)
     doc["nlines"] = len(line_ids)
     n_chars_kept = len(doc[field])
@@ -425,7 +428,7 @@ class DuplicatesRemover(jsonql.Transformer):
         doc_hashes = doc_hashes * keep
         self.n_lines += keep.size
         self.n_lines_kept += kept
-        chars, kept_chars = finalize_doc(doc, self.field, hashes=doc_hashes)
+        chars, kept_chars = finalize_doc(doc, self.field, hashes=doc_hashes, org_field="org_content")
         self.n_chars += chars
         self.n_chars_kept += kept_chars
         return doc
