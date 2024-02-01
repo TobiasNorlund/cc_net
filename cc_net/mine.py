@@ -14,13 +14,16 @@ The pipeline parameters are described in the `Config` class.
 import hashlib
 import json
 import time
+import os
 import warnings
+import logging
+import contextlib
 from argparse import ArgumentParser
 from collections import defaultdict
 from itertools import repeat
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple
-from multiprocessing import Pool, Process
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple, Union, Callable
+from multiprocessing import Pool, Process, Queue, current_process
 
 import func_argparse
 
@@ -48,10 +51,11 @@ NORDIC_PILE_V2_DARDEL_CONFIG = NORDIC_PILE_V2_CONFIG._replace(
     hashes_task_mem=220,
     hashes_shards_per_task=20,
     mine_task_mem = 440,
-    mine_task_timeout=24,
+    mine_task_timeout=10, #24,
     mine_task_cpus=120,
     mine_task_groups=5,
-    mine_num_processes=16,
+    mine_num_processes=64,
+    reader_parallelism=4,
     cache_dir=Path("data/cache")
 )
 
@@ -499,15 +503,138 @@ def _mine_single_shard(conf: Config, shard: int, output: Path, duplicates: Abstr
 
     pipeline = filter(None, (steps[s] for s in conf.pipeline))
 
-    jsonql.run_pipes(
+    run_pipes_queue_feeder(
         *pipeline,
-        inputs=cc_shard,
+        segments_reader=cc_shard,
         processes=conf.mine_num_processes,
-        chunksize=100,
-        # The splitter takes care of writing to files.
-        output=tmp_output if not conf.will_split else None,
     )
+    
     finalize(tmp_output, output)
+
+
+def segment_queue_feeder(segment_queue, doc_chunk_queue, cache_dir: Path, min_len: int, doc_chunk_size: int):
+    while segment := segment_queue.get():
+        url = process_wet_file.segment_url(segment)
+        file = None
+        if cache_dir:
+            file = cache_dir / segment.split("/")[-1]
+
+        chunk = []
+        for doc in process_wet_file.parse_warc_file(jsonql.open_remote_file(url, cache=file), min_len=min_len):
+            doc["cc_segment"] = segment
+            chunk.append(doc)
+
+            if len(chunk) == doc_chunk_size:
+                doc_chunk_queue.put(chunk)
+                chunk = []
+
+        doc_chunk_queue.put(chunk)
+
+
+def pipeline_queue_consumer(doc_chunk_queue, output_queue):
+    global _GLOBAL_TRANSFORMER
+
+    while (chunk := doc_chunk_queue.get()) is not None:
+        for doc in chunk:
+            out = _GLOBAL_TRANSFORMER(doc)
+            if out is not None:
+                output_queue.put(out)
+
+#import random, sys
+def run_pipes_from_queue(output_queue, pipes):
+    #count = 0
+    while (doc := output_queue.get()) is not None:
+        for fn in pipes:
+            doc = fn(doc)
+
+        #count += 1
+        #if count % 1000 == 0:
+        #    print(f"Output: {count} documents, qsize: {output_queue.qsize()}", file=sys.stderr, flush=True)
+
+
+def run_pipes_queue_feeder(
+    *fns: Union[jsonql.Transformer, Callable[[Iterable], Iterable]],
+    segments_reader,
+    processes: int = 1,
+    doc_chunk_size: int = 64,
+    doc_chunk_queue_size = 10_000,
+):
+    transformers = []
+    for t in fns:
+        if not isinstance(t, jsonql.Transformer):
+            break
+        if not t.parallelisable:
+            break
+        transformers.append(t)
+    pipes = fns[len(transformers) :]
+
+    log = logging.getLogger(__name__).info
+
+    with contextlib.ExitStack() as stack:
+        log(f"Preparing {transformers}")
+        transform = stack.enter_context(jsonql.compose(transformers))
+        pipes = [stack.enter_context(pipe) if isinstance(pipe, jsonql.Transformer) else pipe for pipe in pipes]
+
+        _set_global_transformer(transform)
+
+        segment_queue = Queue()
+        for segment in segments_reader.segments:
+            segment_queue.put(segment)
+        for _ in range(processes):
+            segment_queue.put(None)
+        doc_chunk_queue = Queue(maxsize=doc_chunk_queue_size)
+        producers = [
+            Process(target=segment_queue_feeder, args=(segment_queue, doc_chunk_queue, segments_reader.cache_dir, segments_reader.min_len, doc_chunk_size)) 
+            for _ in range(processes)
+        ]
+        log(f"Starting {processes} parallel segment reader processes")
+        for p in producers:
+            p.start()
+        
+        log(f"Starting {processes} parallel pipeline processes")
+        output_queue = Queue()
+        consumers = [Process(target=pipeline_queue_consumer, args=(doc_chunk_queue, output_queue)) for _ in range(processes)]
+        for p in consumers:
+            p.start()
+
+        log("Starting pipes process")
+        output_writer_proc = Process(target=run_pipes_from_queue, args=(output_queue, pipes))
+        output_writer_proc.start()
+
+        # Wait for producers to finish
+        log("Waiting for producers to finish")
+        for p in producers:
+            p.join()
+        # When there are no producers left, signal end to all consumers
+        log("Signal end to all consumers")
+        for _ in range(processes):
+            doc_chunk_queue.put(None)
+        # Wait for all consumers
+        log("Wait for all consumers")
+        for p in consumers:
+            p.join()
+        # When there are no consumers, signal end to pipes process
+        log("Signal end to pipes process")
+        output_queue.put(None)
+        output_writer_proc.join()
+
+        log("All processes finished successfully")
+
+
+# Allows to share transformer acroos subprocess.
+# Used by `run_pipes`
+_GLOBAL_TRANSFORMER: Optional[jsonql.Transformer] = None
+
+
+def _set_global_transformer(transformer: jsonql.Transformer):
+    global _GLOBAL_TRANSFORMER
+    p = current_process()
+    logging.info(
+        f"Started subprocess {p.name}:{p.pid} from {os.getppid()} for {transformer}"
+    )
+    assert transformer.ready, f"{transformer} isn't ready"
+    _GLOBAL_TRANSFORMER = transformer
+
 
 
 def regroup(conf: Config, all_dirs: List[Path]) -> Path:
@@ -564,7 +691,7 @@ def regroup(conf: Config, all_dirs: List[Path]) -> Path:
             f"shards ({n_existing} already there).",
         )
 
-    ex = conf.get_executor(f"regroup_{conf.dump}", mem_gb=1, timeout_hour=12, cpus=2)
+    ex = conf.get_executor(f"regroup_{conf.dump}", mem_gb=4, timeout_hour=12, cpus=2)
     ex(_regroup, repeat(conf), inputs, outputs)
 
     return regroup_dir

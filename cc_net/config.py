@@ -70,6 +70,7 @@ class Config(NamedTuple):
     target_size: str = "4G"
     cleanup_after_regroup: bool = True
     task_parallelism: int = -1
+    reader_parallelism: int = 1
     pipeline: Sequence[str] = DEFAULT_PIPELINE
     experiments: Sequence[str] = []
     cache_dir: Optional[Path] = None
@@ -113,6 +114,7 @@ class Config(NamedTuple):
             num_segments_per_shard=self.num_segments_per_shard,
             min_len=self.min_len,
             cache_dir=dump_cache,
+            parallelism=self.reader_parallelism
         )
 
     @classmethod

@@ -14,6 +14,7 @@ import urllib.request
 from pathlib import Path
 from typing import ContextManager, Iterable, Iterator, List, Optional, Sequence
 from urllib.parse import urlparse
+from multiprocessing import Pool, Queue, Manager, Process
 
 import func_argparse
 from bs4 import BeautifulSoup  # type: ignore
@@ -150,12 +151,39 @@ def parse_warc_file(lines: Iterable[str], min_len: int = 1) -> Iterator[dict]:
         logger.info(f"Found no documents")
 
 
+def segment_url(segment: str):
+    return "/".join((WET_URL_ROOT, segment))
+
+
+def process_segment(segment, cache_dir, min_len, queue):
+    url = segment_url(segment)
+    file: Optional[Path] = None
+    if cache_dir:
+        file = cache_dir / segment.split("/")[-1]
+
+    for doc in parse_warc_file(jsonql.open_remote_file(url, cache=file), min_len=min_len):
+        doc["cc_segment"] = segment
+        queue.put(doc)
+
+    # Signal EOF
+    #queue.put(None)
+
+
+import random
+def consumer(queue):
+    while chunk := queue.get():
+        if random.randint(0, 50000) == 0:
+            print(queue.qsize())
+
+
 def dl(
     dump: str,
     shard: int,
     num_shards: int,
     output: Path = None,
     num_segments_per_shard: int = 0,
+    parallelism: int = 1,
+    cache_dir: Optional[str] = None
 ):
     """Download a shard of the common crawl, and export it to json.
 
@@ -166,32 +194,38 @@ def dl(
         num_shards: total number of shards
         num_segments_per_shard: manual control of the number of segment per shard.
     """
-    reader = CCShardReader(dump, shard, num_shards, num_segments_per_shard)
+    reader = CCShardReader(
+        dump, 
+        shard, 
+        num_shards, 
+        num_segments_per_shard, 
+        cache_dir=Path(cache_dir) if cache_dir is not None else None, 
+        parallelism=parallelism
+    )
+    #reader.read()
     jsonql.run_pipes(inputs=reader, output=output)
     logger.info(f"Done. {output} is ready.")
 
 
 class CCSegmentsReader(Iterable[dict]):
     def __init__(
-        self, segments: Sequence[str], min_len: int = 0, cache_dir: Path = None
+        self, segments: Sequence[str], min_len: int = 0, cache_dir: Path = None, parallelism: int = 1
     ):
         self._segments = segments
         self.min_len = min_len
+        self.parallelism = parallelism
         if cache_dir is not None:
             cache_dir = Path(cache_dir)
             cache_dir.mkdir(exist_ok=True)
         self.cache_dir = cache_dir
         self.retrieved_segments = 0
 
-    def segment_url(self, segment: str):
-        return "/".join((WET_URL_ROOT, segment))
-
     @property
     def segments(self) -> Sequence[str]:
         return self._segments
 
     def open_segment(self, segment: str) -> Iterable[str]:
-        url = self.segment_url(segment)
+        url = segment_url(segment)
         file: Optional[Path] = None
         if self.cache_dir:
             file = self.cache_dir / segment.split("/")[-1]
@@ -200,14 +234,78 @@ class CCSegmentsReader(Iterable[dict]):
 
         return jsonql.open_remote_file(url, cache=file)
 
+    def read(self):
+        #manager = Manager()
+        segment_queue = Queue()
+        for segment in self.segments:
+            segment_queue.put(segment)
+        for _ in range(self.parallelism):
+            segment_queue.put(None)
+
+        doc_queue = Queue(maxsize=10_000)
+        #output_queue = manager.Queue(maxsize=10_000)
+        #with Pool(self.parallelism) as producer_pool:
+        producers = [Process(target=process_segment_queue, args=(segment_queue, doc_queue, self.cache_dir, self.min_len)) for _ in range(self.parallelism)]
+        for p in producers:
+            p.start()
+
+        print("Started producers")
+        #res = [producer_pool.apply_async(process_segment, args=(segment, self.cache_dir, self.min_len, input_queue)) for segment in self.segments]
+
+        consumers = [Process(target=consumer, args=(doc_queue,)) for _ in range(self.parallelism)]
+        for p in consumers:
+            p.start()
+
+        print("Started consumers")
+
+        #for r in res:
+        #    r.wait()
+        for p in producers:
+            p.join()
+
+        print("All producers finished. Sending signals to consumers")
+
+        for _ in range(self.parallelism):
+            doc_queue.put(None)
+
+        for p in consumers:
+            p.join()
+        
+        print("All consumers finished")
+
+    """
+    def __iter__(self) -> Iterator[dict]:
+        import random, sys
+        manager = Manager()
+        q = manager.Queue(maxsize=10_000)
+        with Pool(self.parallelism) as p:
+            res = [p.apply_async(process_segment, args=(segment, self.cache_dir, self.min_len, q)) for segment in self.segments]
+            n_finished = 0
+            while n_finished < len(self.segments):
+                if random.randint(0, 1000) == 0:
+                    print(q.qsize(), file=sys.stderr)
+                doc = q.get()
+                if doc is None:
+                    n_finished += 1
+                    logger.info(f"Finished {n_finished}/{len(self.segments)} segments")
+                else:
+                    yield doc
+            for r in res:
+                r.wait()
+    """
     def __iter__(self) -> Iterator[dict]:
         n = len(self.segments)
         for i, segment in enumerate(self.segments):
             start = time.time()
             # TODO: start downloading the next segment in the background
+            chunk = []
             for doc in parse_warc_file(self.open_segment(segment), self.min_len):
                 doc["cc_segment"] = segment
-                yield doc
+                chunk.append(doc)
+
+                if len(chunk) == 64:
+                    yield chunk
+                    chunk = []
 
             if i + 1 >= n:
                 continue
@@ -216,6 +314,7 @@ class CCSegmentsReader(Iterable[dict]):
             logger.info(
                 f"Parsed {i + 1} / {n} files. Estimated remaining time: {delay:.1f}h"
             )
+    
 
 
 class CCShardReader(CCSegmentsReader):
@@ -227,6 +326,7 @@ class CCShardReader(CCSegmentsReader):
         num_segments_per_shard: int = 40,
         min_len: int = 300,
         cache_dir: Path = None,
+        parallelism: int = 1
     ):
         """Downloads a shard of Common Crawl, and yields dict.
 
@@ -237,7 +337,7 @@ class CCShardReader(CCSegmentsReader):
             num_segments_per_shard: if set will limit the number of files by shard.
                 Useful for testing.
         """
-        super().__init__([], min_len=min_len, cache_dir=cache_dir)
+        super().__init__([], min_len=min_len, cache_dir=cache_dir, parallelism=parallelism)
         self.dump = dump
         self.shard = shard
         assert num_shards > 0 or num_segments_per_shard > 0
