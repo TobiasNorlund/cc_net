@@ -14,6 +14,7 @@ import urllib.request
 from pathlib import Path
 from typing import ContextManager, Iterable, Iterator, List, Optional, Sequence
 from urllib.parse import urlparse
+from multiprocessing import Pool, Queue, Manager, Process
 
 import func_argparse
 from bs4 import BeautifulSoup  # type: ignore
@@ -150,12 +151,17 @@ def parse_warc_file(lines: Iterable[str], min_len: int = 1) -> Iterator[dict]:
         logger.info(f"Found no documents")
 
 
+def segment_url(segment: str):
+    return "/".join((WET_URL_ROOT, segment))
+
+
 def dl(
     dump: str,
     shard: int,
     num_shards: int,
     output: Path = None,
     num_segments_per_shard: int = 0,
+    cache_dir: Optional[str] = None
 ):
     """Download a shard of the common crawl, and export it to json.
 
@@ -166,7 +172,13 @@ def dl(
         num_shards: total number of shards
         num_segments_per_shard: manual control of the number of segment per shard.
     """
-    reader = CCShardReader(dump, shard, num_shards, num_segments_per_shard)
+    reader = CCShardReader(
+        dump, 
+        shard, 
+        num_shards, 
+        num_segments_per_shard, 
+        cache_dir=Path(cache_dir) if cache_dir is not None else None, 
+    )
     jsonql.run_pipes(inputs=reader, output=output)
     logger.info(f"Done. {output} is ready.")
 
@@ -183,15 +195,12 @@ class CCSegmentsReader(Iterable[dict]):
         self.cache_dir = cache_dir
         self.retrieved_segments = 0
 
-    def segment_url(self, segment: str):
-        return "/".join((WET_URL_ROOT, segment))
-
     @property
     def segments(self) -> Sequence[str]:
         return self._segments
 
     def open_segment(self, segment: str) -> Iterable[str]:
-        url = self.segment_url(segment)
+        url = segment_url(segment)
         file: Optional[Path] = None
         if self.cache_dir:
             file = self.cache_dir / segment.split("/")[-1]
@@ -216,6 +225,7 @@ class CCSegmentsReader(Iterable[dict]):
             logger.info(
                 f"Parsed {i + 1} / {n} files. Estimated remaining time: {delay:.1f}h"
             )
+    
 
 
 class CCShardReader(CCSegmentsReader):
