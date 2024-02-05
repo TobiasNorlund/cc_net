@@ -70,7 +70,6 @@ class Config(NamedTuple):
     target_size: str = "4G"
     cleanup_after_regroup: bool = True
     task_parallelism: int = -1
-    reader_parallelism: int = 1
     pipeline: Sequence[str] = DEFAULT_PIPELINE
     experiments: Sequence[str] = []
     cache_dir: Optional[Path] = None
@@ -83,7 +82,6 @@ class Config(NamedTuple):
     mine_task_mem: int = 440  # memory in GB for one mine task
     mine_task_timeout: int = 24  # timeout in hours
     mine_task_cpus: int = 120  # num cpu cores for one mine task
-    mine_task_groups: int = 5  # number of groups of hash_in_mem shards per task
 
     def get_executor(
         self, name: str, timeout_hour: int = 1, mem_gb: int = 1, cpus: int = 1, **options
@@ -114,7 +112,6 @@ class Config(NamedTuple):
             num_segments_per_shard=self.num_segments_per_shard,
             min_len=self.min_len,
             cache_dir=dump_cache,
-            parallelism=self.reader_parallelism
         )
 
     @classmethod

@@ -182,7 +182,6 @@ def dl(
     num_shards: int,
     output: Path = None,
     num_segments_per_shard: int = 0,
-    parallelism: int = 1,
     cache_dir: Optional[str] = None
 ):
     """Download a shard of the common crawl, and export it to json.
@@ -200,20 +199,17 @@ def dl(
         num_shards, 
         num_segments_per_shard, 
         cache_dir=Path(cache_dir) if cache_dir is not None else None, 
-        parallelism=parallelism
     )
-    #reader.read()
     jsonql.run_pipes(inputs=reader, output=output)
     logger.info(f"Done. {output} is ready.")
 
 
 class CCSegmentsReader(Iterable[dict]):
     def __init__(
-        self, segments: Sequence[str], min_len: int = 0, cache_dir: Path = None, parallelism: int = 1
+        self, segments: Sequence[str], min_len: int = 0, cache_dir: Path = None
     ):
         self._segments = segments
         self.min_len = min_len
-        self.parallelism = parallelism
         if cache_dir is not None:
             cache_dir = Path(cache_dir)
             cache_dir.mkdir(exist_ok=True)
@@ -234,65 +230,6 @@ class CCSegmentsReader(Iterable[dict]):
 
         return jsonql.open_remote_file(url, cache=file)
 
-    def read(self):
-        #manager = Manager()
-        segment_queue = Queue()
-        for segment in self.segments:
-            segment_queue.put(segment)
-        for _ in range(self.parallelism):
-            segment_queue.put(None)
-
-        doc_queue = Queue(maxsize=10_000)
-        #output_queue = manager.Queue(maxsize=10_000)
-        #with Pool(self.parallelism) as producer_pool:
-        producers = [Process(target=process_segment_queue, args=(segment_queue, doc_queue, self.cache_dir, self.min_len)) for _ in range(self.parallelism)]
-        for p in producers:
-            p.start()
-
-        print("Started producers")
-        #res = [producer_pool.apply_async(process_segment, args=(segment, self.cache_dir, self.min_len, input_queue)) for segment in self.segments]
-
-        consumers = [Process(target=consumer, args=(doc_queue,)) for _ in range(self.parallelism)]
-        for p in consumers:
-            p.start()
-
-        print("Started consumers")
-
-        #for r in res:
-        #    r.wait()
-        for p in producers:
-            p.join()
-
-        print("All producers finished. Sending signals to consumers")
-
-        for _ in range(self.parallelism):
-            doc_queue.put(None)
-
-        for p in consumers:
-            p.join()
-        
-        print("All consumers finished")
-
-    """
-    def __iter__(self) -> Iterator[dict]:
-        import random, sys
-        manager = Manager()
-        q = manager.Queue(maxsize=10_000)
-        with Pool(self.parallelism) as p:
-            res = [p.apply_async(process_segment, args=(segment, self.cache_dir, self.min_len, q)) for segment in self.segments]
-            n_finished = 0
-            while n_finished < len(self.segments):
-                if random.randint(0, 1000) == 0:
-                    print(q.qsize(), file=sys.stderr)
-                doc = q.get()
-                if doc is None:
-                    n_finished += 1
-                    logger.info(f"Finished {n_finished}/{len(self.segments)} segments")
-                else:
-                    yield doc
-            for r in res:
-                r.wait()
-    """
     def __iter__(self) -> Iterator[dict]:
         n = len(self.segments)
         for i, segment in enumerate(self.segments):
@@ -326,7 +263,6 @@ class CCShardReader(CCSegmentsReader):
         num_segments_per_shard: int = 40,
         min_len: int = 300,
         cache_dir: Path = None,
-        parallelism: int = 1
     ):
         """Downloads a shard of Common Crawl, and yields dict.
 
@@ -337,7 +273,7 @@ class CCShardReader(CCSegmentsReader):
             num_segments_per_shard: if set will limit the number of files by shard.
                 Useful for testing.
         """
-        super().__init__([], min_len=min_len, cache_dir=cache_dir, parallelism=parallelism)
+        super().__init__([], min_len=min_len, cache_dir=cache_dir)
         self.dump = dump
         self.shard = shard
         assert num_shards > 0 or num_segments_per_shard > 0

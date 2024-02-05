@@ -50,12 +50,10 @@ NORDIC_PILE_V2_CONFIG = Config(
 NORDIC_PILE_V2_DARDEL_CONFIG = NORDIC_PILE_V2_CONFIG._replace(
     hashes_task_mem=220,
     hashes_shards_per_task=20,
-    mine_task_mem = 440,
+    mine_task_mem = 220,
     mine_task_timeout=10, #24,
     mine_task_cpus=120,
-    mine_task_groups=5,
-    mine_num_processes=64,
-    reader_parallelism=4,
+    mine_num_processes=90,
     cache_dir=Path("data/cache")
 )
 
@@ -389,12 +387,7 @@ def mine_parallel(conf: Config) -> List[Path]:
             missing_output_paths.append(group_output_paths)
             relevant_hashes_groups.append(hashes_groups[group_idx])
     
-    # Then group again to form parallel groups
-    hashes_groups = list(jsonql.grouper(relevant_hashes_groups, n=conf.mine_task_groups))
-    missing_shards = list(jsonql.grouper(missing_shards, n=conf.mine_task_groups))
-    missing_output_paths = list(jsonql.grouper(missing_output_paths, n=conf.mine_task_groups))
-
-    ex(_mine_shards_parallel, repeat(conf), hashes_groups, missing_shards, missing_output_paths)
+    ex(_mine_shard_group, repeat(conf), hashes_groups, missing_shards, missing_output_paths)
 
     assert all(o.exists() for o in outputs)
     return outputs
@@ -419,7 +412,6 @@ def _mine_shard_group(conf: Config, hashes: List[Path], shards: List[int], outpu
     # Process each shard in group sequentially (hard to parallelize as the FlatHashSet can't be memory shared easily)
     for shard, output in zip(shards, outputs):
         _mine_single_shard(conf, shard, output, duplicates)
-
 
     return f"Mined shards {', '.join(map(str, shards))}"
 
@@ -531,25 +523,21 @@ def segment_queue_feeder(segment_queue, doc_chunk_queue, cache_dir: Path, min_le
         doc_chunk_queue.put(chunk)
 
 
-def pipeline_queue_consumer(doc_chunk_queue, output_queue):
-    global _GLOBAL_TRANSFORMER
-
+def pipeline_queue_consumer(doc_chunk_queue, output_queue, transform):
     while (chunk := doc_chunk_queue.get()) is not None:
         for doc in chunk:
-            out = _GLOBAL_TRANSFORMER(doc)
+            out = transform(doc)
             if out is not None:
                 output_queue.put(out)
 
-#import random, sys
-def run_pipes_from_queue(output_queue, pipes):
-    #count = 0
-    while (doc := output_queue.get()) is not None:
-        for fn in pipes:
-            doc = fn(doc)
 
-        #count += 1
-        #if count % 1000 == 0:
-        #    print(f"Output: {count} documents, qsize: {output_queue.qsize()}", file=sys.stderr, flush=True)
+def run_pipes_from_queue(output_queue, pipes):
+    with contextlib.ExitStack() as stack:
+        pipes = [stack.enter_context(pipe) if isinstance(pipe, jsonql.Transformer) else pipe for pipe in pipes]
+        #count = 0
+        while (doc := output_queue.get()) is not None:
+            for fn in pipes:
+                doc = fn(doc)
 
 
 def run_pipes_queue_feeder(
@@ -573,9 +561,6 @@ def run_pipes_queue_feeder(
     with contextlib.ExitStack() as stack:
         log(f"Preparing {transformers}")
         transform = stack.enter_context(jsonql.compose(transformers))
-        pipes = [stack.enter_context(pipe) if isinstance(pipe, jsonql.Transformer) else pipe for pipe in pipes]
-
-        _set_global_transformer(transform)
 
         segment_queue = Queue()
         for segment in segments_reader.segments:
@@ -593,7 +578,7 @@ def run_pipes_queue_feeder(
         
         log(f"Starting {processes} parallel pipeline processes")
         output_queue = Queue()
-        consumers = [Process(target=pipeline_queue_consumer, args=(doc_chunk_queue, output_queue)) for _ in range(processes)]
+        consumers = [Process(target=pipeline_queue_consumer, args=(doc_chunk_queue, output_queue, transform)) for _ in range(processes)]
         for p in consumers:
             p.start()
 
@@ -619,22 +604,6 @@ def run_pipes_queue_feeder(
         output_writer_proc.join()
 
         log("All processes finished successfully")
-
-
-# Allows to share transformer acroos subprocess.
-# Used by `run_pipes`
-_GLOBAL_TRANSFORMER: Optional[jsonql.Transformer] = None
-
-
-def _set_global_transformer(transformer: jsonql.Transformer):
-    global _GLOBAL_TRANSFORMER
-    p = current_process()
-    logging.info(
-        f"Started subprocess {p.name}:{p.pid} from {os.getppid()} for {transformer}"
-    )
-    assert transformer.ready, f"{transformer} isn't ready"
-    _GLOBAL_TRANSFORMER = transformer
-
 
 
 def regroup(conf: Config, all_dirs: List[Path]) -> Path:
