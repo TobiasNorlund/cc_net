@@ -155,27 +155,6 @@ def segment_url(segment: str):
     return "/".join((WET_URL_ROOT, segment))
 
 
-def process_segment(segment, cache_dir, min_len, queue):
-    url = segment_url(segment)
-    file: Optional[Path] = None
-    if cache_dir:
-        file = cache_dir / segment.split("/")[-1]
-
-    for doc in parse_warc_file(jsonql.open_remote_file(url, cache=file), min_len=min_len):
-        doc["cc_segment"] = segment
-        queue.put(doc)
-
-    # Signal EOF
-    #queue.put(None)
-
-
-import random
-def consumer(queue):
-    while chunk := queue.get():
-        if random.randint(0, 50000) == 0:
-            print(queue.qsize())
-
-
 def dl(
     dump: str,
     shard: int,
@@ -235,14 +214,9 @@ class CCSegmentsReader(Iterable[dict]):
         for i, segment in enumerate(self.segments):
             start = time.time()
             # TODO: start downloading the next segment in the background
-            chunk = []
             for doc in parse_warc_file(self.open_segment(segment), self.min_len):
                 doc["cc_segment"] = segment
-                chunk.append(doc)
-
-                if len(chunk) == 64:
-                    yield chunk
-                    chunk = []
+                yield doc
 
             if i + 1 >= n:
                 continue
