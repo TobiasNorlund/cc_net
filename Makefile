@@ -44,8 +44,8 @@ install: bin/lid.bin $(KENLM) $(SPM_TRAIN)
 	@if [ -f "data" ]; then\
 		echo "Please create/simlink a 'data' directory.";\
 	fi
-	@if ! python -c "from cc_net import __main__" 2> /dev/null; then\
-		pip install . ;\
+	@if ! pip show cc_net 2> /dev/null; then\
+		pip install -e .[getpy] ;\
 	fi
 	echo " --> All dependencies looks good !"
 
