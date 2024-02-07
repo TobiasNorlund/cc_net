@@ -267,7 +267,7 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
     cc_shard = conf.get_cc_shard(shard)
 
     steps: Dict[str, Optional[jsonql.Transformer]] = {}
-    lang_id = Path("bin") / "lid.bin"
+    lang_id = Path(__file__).parent / ".."/ "bin" / "lid.bin"
     steps["lid_before_dedup"] = split_by_lang.Classifier(
         model=lang_id, field="raw_content", out_field="lid_before_dedup", top=5
     )
@@ -424,7 +424,7 @@ def _mine_single_shard(conf: Config, shard: int, output: Path, duplicates: Abstr
     cc_shard = conf.get_cc_shard(shard)
 
     steps: Dict[str, Optional[jsonql.Transformer]] = {}
-    lang_id = Path("bin") / "lid.bin"
+    lang_id = Path(__file__).parent / ".."/ "bin" / "lid.bin"
     steps["lid_before_dedup"] = split_by_lang.Classifier(
         model=lang_id, field="raw_content", out_field="lid_before_dedup", top=5
     )

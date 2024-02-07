@@ -63,7 +63,7 @@ class Config(NamedTuple):
     lang_blacklist: Sequence[str] = []
     lang_threshold: float = 0.5
     keep_bucket: Sequence[str] = []
-    lm_dir: Path = Path(__file__) / ".." / "data/lm_sp"
+    lm_dir: Path = Path(__file__).parent / ".." / "data/lm_sp"
     cutoff: Path = CUTOFF_CSV
     lm_languages: Optional[Sequence[str]] = None
     mine_num_processes: int = 16
