@@ -63,7 +63,7 @@ class Config(NamedTuple):
     lang_blacklist: Sequence[str] = []
     lang_threshold: float = 0.5
     keep_bucket: Sequence[str] = []
-    lm_dir: Path = Path("data/lm_sp")
+    lm_dir: Path = Path(__file__) / ".." / "data/lm_sp"
     cutoff: Path = CUTOFF_CSV
     lm_languages: Optional[Sequence[str]] = None
     mine_num_processes: int = 16
@@ -79,8 +79,8 @@ class Config(NamedTuple):
     hashes_shards_per_task: int = 1  # The number of shards to hash (in parallel) in each task
     
     # mine infra
-    mine_task_mem: int = 440  # memory in GB for one mine task
-    mine_task_timeout: int = 24  # timeout in hours
+    mine_task_mem: int = 220  # memory in GB for one mine task
+    mine_task_timeout: int = 12  # timeout in hours
     mine_task_cpus: int = 120  # num cpu cores for one mine task
 
     def get_executor(
