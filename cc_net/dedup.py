@@ -428,7 +428,7 @@ class DuplicatesRemover(jsonql.Transformer):
         doc_hashes = doc_hashes * keep
         self.n_lines += keep.size
         self.n_lines_kept += kept
-        chars, kept_chars = finalize_doc(doc, self.field, hashes=doc_hashes, org_field="org_content")
+        chars, kept_chars = finalize_doc(doc, self.field, hashes=doc_hashes) # org_field="org_content")
         self.n_chars += chars
         self.n_chars_kept += kept_chars
         return doc
