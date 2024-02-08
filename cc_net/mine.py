@@ -348,7 +348,7 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
     return f"Mined {output}"
 
 
-def mine_parallel(conf: Config) -> List[Path]:
+def mine_parallel(conf: Config, hashes_done_callback: Optional[Callable]=None) -> List[Path]:
     mined_dir = conf.get_mined_dir()
     if conf.will_split:
         # Give a directories when splitting
@@ -365,6 +365,9 @@ def mine_parallel(conf: Config) -> List[Path]:
     
     # Compute hashes firsts.
     hashes_groups = list(jsonql.grouper(hashes(conf), conf.hash_in_mem))
+    if hashes_done_callback is not None:
+        # Notify hashes are done
+        hashes_done_callback()
 
     mined_dir.mkdir(parents=True, exist_ok=True)
 
@@ -391,17 +394,6 @@ def mine_parallel(conf: Config) -> List[Path]:
 
     assert all(o.exists() for o in outputs)
     return outputs
-
-
-def _mine_shards_parallel(conf: Config, hashes: List[List[Path]], shards: List[List[int]], outputs: List[List[Path]]):
-    # Start a subprocess for each group, to run _mine_shard_group
-    procs = []
-    for hash_group, shard_group, output_group in zip(hashes, shards, outputs):
-        p = Process(target=_mine_shard_group, args=(conf, hash_group, shard_group, output_group))
-        p.start()
-        procs.append(p)
-    for p in procs:
-        p.join()
 
 
 def _mine_shard_group(conf: Config, hashes: List[Path], shards: List[int], outputs: List[Path]):
@@ -777,7 +769,7 @@ def get_main_parser() -> ArgumentParser:
     return p
 
 
-def main(config: str = "base", **config_as_dict: Any) -> None:
+def main(config: str = "base", hashes_done_callback: Optional[Callable]=None, **config_as_dict: Any) -> None:
     # Use the given 'config' as default value.
     config_base = config
     if config_base in PREDEF_CONFIGS:
@@ -794,7 +786,7 @@ def main(config: str = "base", **config_as_dict: Any) -> None:
     print(f"Will run cc_net.mine.main with the following config:", conf)
 
     #all_files = mine(conf)
-    all_files = mine_parallel(conf)
+    all_files = mine_parallel(conf, hashes_done_callback=hashes_done_callback)
     if conf.will_split:
         assert all_files
         assert all(d.is_dir() for d in all_files)

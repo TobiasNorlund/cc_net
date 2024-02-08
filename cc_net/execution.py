@@ -86,7 +86,7 @@ def map_array_and_wait(
     assert len(args) > 0, f"No arguments passed to {f_name}"
     approx_length = _approx_length(*args)
 
-    print(f"Submitting {f_name} in a job array ({approx_length} jobs)")
+    logging.info(f"Submitting {f_name} in a job array ({approx_length} jobs)")
     jobs = ex.map_array(function, *args)
     if not jobs:
         return
@@ -94,25 +94,25 @@ def map_array_and_wait(
     done = 0
     total = len(jobs)
     job_array_id = jobs[0].job_id.split("_")[0]
-    print(f"Started {f_name} in job array {job_array_id} ({len(jobs)} jobs).")
+    logging.info(f"Started {f_name} in job array {job_array_id} ({len(jobs)} jobs).")
     for job in submitit.helpers.as_completed(jobs):
         done += 1
         e = job.exception()
         if not e:
-            print(f"Finished job {job.job_id} ({done} / {total}).", job.result())
+            logging.info(f"Finished job {job.job_id} ({done} / {total}).", job.result())
             continue
 
-        print(f"Failed job {job.job_id} ({done} / {total}):", e)
+        logging.error(f"Failed job {job.job_id} ({done} / {total}):", e)
         failed_jobs.append(job)
 
     if failed_jobs:
         n_failures = 10
         message = f"{len(failed_jobs)} / {done} jobs failed while running {f_name}"
-        print(message)
+        logging.error(message)
         for job in failed_jobs[:n_failures]:
-            print(f"Failed {job.job_id} -> {job.paths.stderr}")
+            logging.error(f"Failed {job.job_id} -> {job.paths.stderr}")
         if len(failed_jobs) > n_failures:
-            print(f"... ({len(failed_jobs) - n_failures} failed job skipped)")
+            logging.warning(f"... ({len(failed_jobs) - n_failures} failed job skipped)")
         raise Exception(message)
 
 
