@@ -119,7 +119,7 @@ def group_by_docs(warc_lines: Iterable[str]) -> Iterable[dict]:
             read_headers = warc != ""
             continue
 
-        if warc == "WARC/1.0":
+        if warc == "WARC/1.0" and doc[-1] == "" and doc[-2] == "":
             # We reached the beginning of the new doc.
             parsed = parse_doc(headers, doc)
             if parsed is not None:

@@ -153,7 +153,11 @@ def hashes(conf: Config) -> List[Path]:
 
     hashes_dir.mkdir(parents=True, exist_ok=True)
 
-    ex = conf.get_executor(f"hashes_{conf.dump}", mem_gb=conf.hashes_task_mem)
+    ex = conf.get_executor(
+        f"hashes_{conf.dump}", 
+        mem_gb=conf.hashes_task_mem, 
+        timeout_hour=2
+    )
 
     # Group shards in groups
     missing_outputs = list(jsonql.grouper(missing_outputs, conf.hashes_shards_per_task))
