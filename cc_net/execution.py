@@ -99,10 +99,10 @@ def map_array_and_wait(
         done += 1
         e = job.exception()
         if not e:
-            logging.info(f"Finished job {job.job_id} ({done} / {total}).", job.result())
+            logging.info(f"Finished job {job.job_id} ({done} / {total}): {job.result()}")
             continue
 
-        logging.error(f"Failed job {job.job_id} ({done} / {total}):", e)
+        logging.error(f"Failed job {job.job_id} ({done} / {total}): {str(e)}")
         failed_jobs.append(job)
 
     if failed_jobs:

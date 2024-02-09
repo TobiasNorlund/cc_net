@@ -176,7 +176,7 @@ def _hashes_shards(conf: Config, shards: List[int], outputs: List[Path]):
     # Process all 20 shards in parallel
     with Pool(conf.hashes_shards_per_task) as p:
         p.starmap(_hashes_shard, zip(repeat(conf), shards, outputs))
-    return f"Mined shards {', '.join(map(str, shards))}"
+    return f"Hashed shards {', '.join(map(str, shards))}"
 
 
 def _hashes_shard(conf: Config, shard: int, output: Path):
@@ -365,6 +365,7 @@ def mine_parallel(conf: Config, hashes_done_callback: Optional[Callable]=None) -
 
     missing_outputs = [(shard, o) for shard, o in enumerate(outputs) if not o.exists()]
     if not missing_outputs:
+        hashes_done_callback()
         return outputs
     
     # Compute hashes firsts.
@@ -608,14 +609,14 @@ def regroup(conf: Config, all_dirs: List[Path]) -> Path:
     assert all_dirs
     all_files = [f for d in all_dirs for f in d.glob("*.json.gz")]
     if not all_files:
-        print(f"No .json.gz file found in {all_dirs[0]}")
+        logging.info(f"No .json.gz file found in {all_dirs[0]}")
 
     splits: Dict[str, List[Path]] = defaultdict(list)
     for f in all_files:
         split = f.name.split(".")[0]
         splits[split].append(f)
 
-    print(f"Identified {len(all_files)} files to regroup from {len(splits)} splits.")
+    logging.info(f"Identified {len(all_files)} files to regroup from {len(splits)} splits.")
     inputs: List[List[Path]] = []
     outputs: List[Path] = []
     target_size = jsonql.parse_size(conf.target_size)
@@ -639,7 +640,7 @@ def regroup(conf: Config, all_dirs: List[Path]) -> Path:
                 + existing_outputs[-1].stat().st_size
             )
             if new_size < target_size:
-                print(f"Will append {cuts[0]} to {existing_outputs[-1]}")
+                logging.info(f"Will append {cuts[0]} to {existing_outputs[-1]}")
                 cuts[0].insert(0, existing_outputs.pop(-1))
 
         n_existing = len(existing_outputs)
@@ -649,12 +650,7 @@ def regroup(conf: Config, all_dirs: List[Path]) -> Path:
             output = regroup_dir / f"{split}_{j:04}.json.gz"
             inputs.append(cut)
             outputs.append(output)
-        print(
-            str(regroup_dir / pattern),
-            "->",
-            len(cuts),
-            f"shards ({n_existing} already there).",
-        )
+        logging.info(f"{regroup_dir / pattern} -> {len(cuts)} shards ({n_existing} already there).")
 
     ex = conf.get_executor(f"regroup_{conf.dump}", mem_gb=4, timeout_hour=12, cpus=2)
     ex(_regroup, repeat(conf), inputs, outputs)
@@ -702,7 +698,7 @@ def move_segments(conf: Config, all_dirs: Sequence[Path]) -> Path:
         return f"Moved {n} .json.gz files from {subdir} to {regroup_dir}"
 
     ex(_move_segments, all_dirs, repeat(regroup_dir))
-    print(f"Results are in {regroup_dir}")
+    logging.info(f"Results are in {regroup_dir}")
     return regroup_dir
 
 
@@ -721,11 +717,11 @@ def _validate_test(conf: Config, output_dir: Path, generate: bool = False):
     def dump(x):
         return json.dumps(x, indent=2, ensure_ascii=False)
 
-    print("*** Stats ***")
+    logging.info("*** Stats ***")
     stats_raw = dump(stats)
     stats_file = FILE_DIR / "data" / "test_stats.json"
     if generate:
-        print("Saving stats to", stats_file)
+        logging.info(f"Saving stats to {stats_file}")
         stats_file.write_text(stats_raw)
         return
 
@@ -734,31 +730,21 @@ def _validate_test(conf: Config, output_dir: Path, generate: bool = False):
         expected_stats = json.loads(stats_file.read_text())
 
     if expected_stats == stats:
-        print("Everything looks good !")
+        logging.info("Everything looks good !")
         return
 
     stats_file.with_suffix(".actual.json").write_text(stats_raw)
-    print("*** Expected Stats ***")
-    print(dump(expected_stats))
+    logging.info("*** Expected Stats ***")
+    logging.info(dump(expected_stats))
 
-    print("*** Diff ***")
+    logging.info("*** Diff ***")
     for fname in sorted(expected_stats.keys()):
-        print(fname)
+        logging.info(fname)
         assert fname in expected_stats, "missing file " + fname
         if expected_stats[fname]["size"] != stats[fname]["size"]:
-            print(
-                "  - Expected size",
-                expected_stats[fname]["size"],
-                ", size",
-                stats[fname]["size"],
-            )
+            logging.info(f"  - Expected size {expected_stats[fname]['size']}, size {stats[fname]['size']}")
         if expected_stats[fname]["checksum"] != stats[fname]["checksum"]:
-            print(
-                "  - Expected checksum",
-                expected_stats[fname]["checksum"],
-                ", checksum",
-                stats[fname]["checksum"],
-            )
+            logging.info(f"  - Expected checksum {expected_stats[fname]['checksum']}, checksum {stats[fname]['checksum']}")
 
 
 def get_main_parser() -> ArgumentParser:
@@ -787,7 +773,7 @@ def main(config: str = "base", hashes_done_callback: Optional[Callable]=None, **
         )
     conf = conf._replace(**{k: v for (k, v) in config_as_dict.items() if v is not None})
 
-    print(f"Will run cc_net.mine.main with the following config:", conf)
+    logging.info(f"Will run cc_net.mine.main with the following config: {conf}")
 
     #all_files = mine(conf)
     all_files = mine_parallel(conf, hashes_done_callback=hashes_done_callback)

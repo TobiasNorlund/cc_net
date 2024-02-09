@@ -1096,8 +1096,8 @@ def request_get_content(url: str, n_retry: int = 10) -> bytes:
             break
         except requests.exceptions.RequestException as e:
             # Sleep and try again on error, unless it's a 404.
-            message = e.args[0] if isinstance(e.args[0], str) else ""
-            if i == n_retry or "Client Error" in message:
+            #message = e.args[0] if isinstance(e.args[0], str) else ""
+            if i == n_retry: # or "Client Error" in message: - Maybe commenting this out will fix Client errors happening sometimes
                 raise e
             warnings.warn(
                 f"Swallowed error {e} while downloading {url} ({i} out of {n_retry})"
