@@ -156,7 +156,7 @@ def hashes(conf: Config) -> List[Path]:
     ex = conf.get_executor(
         f"hashes_{conf.dump}", 
         mem_gb=conf.hashes_task_mem, 
-        timeout_hour=2
+        timeout_hour=4
     )
 
     # Group shards in groups
@@ -352,7 +352,7 @@ def _mine_shard(conf: Config, hashes: List[Path], shard: int, output: Path) -> s
     return f"Mined {output}"
 
 
-def mine_parallel(conf: Config, hashes_done_callback: Optional[Callable]=None) -> List[Path]:
+def mine_parallel(conf: Config) -> List[Path]:
     mined_dir = conf.get_mined_dir()
     if conf.will_split:
         # Give a directories when splitting
@@ -365,15 +365,10 @@ def mine_parallel(conf: Config, hashes_done_callback: Optional[Callable]=None) -
 
     missing_outputs = [(shard, o) for shard, o in enumerate(outputs) if not o.exists()]
     if not missing_outputs:
-        hashes_done_callback()
         return outputs
     
     # Compute hashes firsts.
     hashes_groups = list(jsonql.grouper(hashes(conf), conf.hash_in_mem))
-    if hashes_done_callback is not None:
-        # Notify hashes are done
-        hashes_done_callback()
-
     mined_dir.mkdir(parents=True, exist_ok=True)
 
     # Request full node
@@ -759,7 +754,7 @@ def get_main_parser() -> ArgumentParser:
     return p
 
 
-def main(config: str = "base", hashes_done_callback: Optional[Callable]=None, **config_as_dict: Any) -> None:
+def main(config: str = "base", **config_as_dict: Any) -> None:
     # Use the given 'config' as default value.
     config_base = config
     if config_base in PREDEF_CONFIGS:
@@ -776,7 +771,7 @@ def main(config: str = "base", hashes_done_callback: Optional[Callable]=None, **
     logging.info(f"Will run cc_net.mine.main with the following config: {conf}")
 
     #all_files = mine(conf)
-    all_files = mine_parallel(conf, hashes_done_callback=hashes_done_callback)
+    all_files = mine_parallel(conf)
     if conf.will_split:
         assert all_files
         assert all(d.is_dir() for d in all_files)
