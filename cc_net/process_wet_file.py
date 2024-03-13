@@ -35,7 +35,7 @@ def cc_wet_paths_url(dump_id: str) -> str:
 def cc_segments(dump_id: str, cache_dir: Path = None) -> List[str]:
     wet_paths = cc_wet_paths_url(dump_id)
     cache_dir = cache_dir or jsonql._tmp_dir()
-    wet_paths_cache = cache_dir / f"wet_{dump_id}.paths.gz"
+    wet_paths_cache = cache_dir / f"wet.paths.gz"
     f = jsonql.open_remote_file(wet_paths, cache=wet_paths_cache)
     return [segment.strip() for segment in f]
 
@@ -191,7 +191,6 @@ class CCSegmentsReader(Iterable[dict]):
         self.min_len = min_len
         if cache_dir is not None:
             cache_dir = Path(cache_dir)
-            cache_dir.mkdir(exist_ok=True)
         self.cache_dir = cache_dir
         self.retrieved_segments = 0
 
@@ -203,7 +202,8 @@ class CCSegmentsReader(Iterable[dict]):
         url = segment_url(segment)
         file: Optional[Path] = None
         if self.cache_dir:
-            file = self.cache_dir / segment.split("/")[-1]
+            file = self.cache_dir / segment
+            file.parent.mkdir(parents=True, exist_ok=True)
         if not file or not file.exists():
             self.retrieved_segments += 1
 

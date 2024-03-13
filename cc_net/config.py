@@ -102,8 +102,7 @@ class Config(NamedTuple):
         dump_cache: Optional[Path] = None
         if self.cache_dir:
             self.cache_dir.mkdir(exist_ok=True)
-            dump_cache = self.cache_dir / self.dump
-            dump_cache.mkdir(exist_ok=True)
+            dump_cache = self.cache_dir
 
         return process_wet_file.CCShardReader(
             self.dump,
