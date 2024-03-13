@@ -501,7 +501,7 @@ def segment_queue_feeder(segment_queue, doc_chunk_queue, cache_dir: Path, min_le
         url = process_wet_file.segment_url(segment)
         file = None
         if cache_dir:
-            file = cache_dir / segment.split("/")[-1]
+            file = cache_dir / segment
 
         chunk = []
         for doc in process_wet_file.parse_warc_file(jsonql.open_remote_file(url, cache=file), min_len=min_len):
@@ -526,7 +526,6 @@ def pipeline_queue_consumer(doc_chunk_queue, output_queue, transform):
 def run_pipes_from_queue(output_queue, pipes):
     with contextlib.ExitStack() as stack:
         pipes = [stack.enter_context(pipe) if isinstance(pipe, jsonql.Transformer) else pipe for pipe in pipes]
-        #count = 0
         while (doc := output_queue.get()) is not None:
             for fn in pipes:
                 doc = fn(doc)

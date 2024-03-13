@@ -35,6 +35,7 @@ def cc_wet_paths_url(dump_id: str) -> str:
 def cc_segments(dump_id: str, cache_dir: Path = None) -> List[str]:
     wet_paths = cc_wet_paths_url(dump_id)
     cache_dir = cache_dir or jsonql._tmp_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
     wet_paths_cache = cache_dir / f"wet.paths.gz"
     f = jsonql.open_remote_file(wet_paths, cache=wet_paths_cache)
     return [segment.strip() for segment in f]
@@ -225,7 +226,6 @@ class CCSegmentsReader(Iterable[dict]):
             logger.info(
                 f"Parsed {i + 1} / {n} files. Estimated remaining time: {delay:.1f}h"
             )
-    
 
 
 class CCShardReader(CCSegmentsReader):
@@ -259,7 +259,7 @@ class CCShardReader(CCSegmentsReader):
         # Delaying the initialization allows to delay the looking up of the WET files
         if self._segments:
             return self._segments
-        segments = cc_segments(self.dump, self.cache_dir)
+        segments = cc_segments(self.dump, self.cache_dir / "crawl-data" / f"CC-MAIN-{self.dump}")
         n = len(segments)
         if self.num_shards < 0:
             self.num_shards = n // self.num_segments_per_shard
