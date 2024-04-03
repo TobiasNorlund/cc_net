@@ -117,9 +117,13 @@ def tmp(output: Path) -> Path:
     return output.parent / (output.stem + ".tmp" + output.suffix)
 
 
-def finalize(tmp_output: Path, output: Path) -> None:
+def finalize(tmp_output: Path, output: Path, is_dir=False) -> None:
     if not tmp_output.exists():
         warnings.warn(f"Targeted tmp output {tmp_output} doesn't exists.")
+        if is_dir:
+            output.mkdir(parents=True, exist_ok=True)
+        else:
+            output.touch()
         return
 
     tmp_index = tmp_output.parent / (tmp_output.name + ".index")
@@ -493,7 +497,7 @@ def _mine_single_shard(conf: Config, shard: int, output: Path, duplicates: Abstr
         processes=conf.mine_num_processes,
     )
     
-    finalize(tmp_output, output)
+    finalize(tmp_output, output, is_dir=conf.will_split)
 
 
 def segment_queue_feeder(segment_queue, doc_chunk_queue, cache_dir: Path, min_len: int, doc_chunk_size: int):
